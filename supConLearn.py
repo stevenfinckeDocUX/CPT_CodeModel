@@ -1,25 +1,39 @@
 import argparse
+from dataclasses import dataclass
+from collections import UserList
+from ml_util.random_utils import set_seed
+from ml_util.classes import ClassMember, ClassInventory
 from ml_util.docux_logger import give_logger, configure_logger
-from ml_util.sentence_transformer_interface import SentenceTransformerTrainerHolder
+from ml_util.sentence_transformer_interface import SentenceTransformerSupConTrainer
+from ml_util.supervised_contrastive import get_SubCon_train_dev_test_dict
 from typing import Tuple, Dict, List, Iterable
 
 logger = give_logger('supConLearn')
 
 class RawCPT:
-    skip_fields = ('Concept Id', 'Current Descriptor', 'Effective Date', 'Test Name', 'Lab Name', 'Manufacturer Name')
+    skip_fields = ('Concept Id', 'Current Descriptor Effective Date', 'Test Name', 'Lab Name', 'Manufacturer Name',
+                   'Spanish Consumer')
     '''
     Concept Id	CPT Code	Long	Medium	Short	Consumer	Spanish Consumer	Current Descriptor Effective Date	
     Test Name	Lab Name	Manufacturer Name
     '''
     display_fields = ('Long', 'Consumer')
     def __init__(self,
-                 code_file: str):
+                 code_file: str,
+                 *,
+                 required_init_strings: List[str] = None):
         self.by_cpt: Dict[str, Tuple[str]] = {}
         self.header_inds = []
-        self.field_names = []
+        self.field_names: List[str] = []
+
+        cpt_is_usable = \
+            lambda cpt: (required_init_strings is None
+                         or sum([int(cpt.startswith(init_s)) for init_s in required_init_strings]) > 0)
+
         cpt_ind = None
         with open(code_file, "r", encoding='utf-8') as in_H:
             for line in in_H:
+                line = line.strip()
                 if len(self.header_inds) < 1:
                     if line.startswith("Concept Id"):
                         fields = line.strip().split("\t")
@@ -27,12 +41,14 @@ class RawCPT:
                             if field not in self.skip_fields:
                                 self.header_inds.append(ind)
                                 self.field_names.append(field)
-                    cpt_ind = self.field_names.index('CPT Code')
+                        cpt_ind = self.field_names.index('CPT Code')
                 else:
                     raw: List[str] = line.strip().split("\t")
-                    use_values = tuple([raw[i] for i in self.header_inds])
+                    use_values = tuple([raw[i] if i < len(raw) else ''
+                                        for i in self.header_inds])
                     cpt = use_values[cpt_ind]
-                    self.by_cpt[cpt] = use_values
+                    if cpt_is_usable(cpt):
+                        self.by_cpt[cpt] = use_values
 
         self.value_for_cpt_field = lambda cpt, field: (
             self.by_cpt[
@@ -46,49 +62,65 @@ class RawCPT:
         return tuple([self.value_for_cpt_field(cpt_code, f)
                       for f in  self.display_fields])
 
-    def give_all_variants(self) -> Dict[str, List[str]]:
-        out = \
-            {cpt:
-                sorted(list(set(
-                    [fields[
-                         self.field_names.index(n)
-                     ]
-                     for n in self.display_fields]
-                )))
-                for cpt, fields in self.by_cpt.items()}
+    def give_inventory(self) -> ClassInventory:
+        ready = \
+            [ClassMember(
+                cpt,
+                tuple(sorted(list(set(
+                    [
+                        fields[
+                            self.field_names.index(n)
+                        ]
+                        for n in self.display_fields]
+                ))))
+            )
+                for cpt, fields in sorted(self.by_cpt.items())]
 
-        return out
+        return ClassInventory(ready, name='CPT Inventory')
+
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cpt_code_file', type='str', default='Consolidated_Code_List.txt')
+    parser.add_argument('--cpt_code_file', type=str, default='Consolidated_Code_List.txt')
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--model_name', type=str, default="pritamdeka/PubMedBERT-mnli-snli-scinli-scitail-mednli-stsb")
+    parser.add_argument('--model_name', type=str,
+                        default="pritamdeka/PubMedBERT-mnli-snli-scinli-scitail-mednli-stsb")
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--overwrite_output_dir', action='store_true')
-    parser.add_argument('--per_device_train_batch_size', type=int, default=8)
-    parser.add_argument('--per_device_eval_batch_size', type=int, default=8)
+    parser.add_argument('--per_device_train_batch_size', type=int, default=64)
+    parser.add_argument('--per_device_eval_batch_size', type=int, default=64)
     parser.add_argument('--learning_rate', type=float, default=5e-05)
     parser.add_argument('--num_train_epochs', type=float, default=3.0)
     parser.add_argument('--warmup_ratio', type=float, default=0.0)
     parser.add_argument('--use_cpu', action='store_true')
+    parser.add_argument('--part_train', type=float, default=0.9)
+    parser.add_argument('--part_test', type=float, default=0.05)
+    parser.add_argument('--shuffle_data', action='store_true')
+    parser.add_argument('--init_cpt_filters', type=str, nargs='+',
+                        help="Only use CPT codes which begin with one of these strings.")
+    parser.add_argument('--loss_temperature', type=float, default=0.01)
     args = parser.parse_args()
+    set_seed(args.seed)
 
+    # For the trainer
     args.do_train = True
     args.do_eval = True
-    args.do_eval = False
+    args.do_predict = False
 
-    cpt_table = RawCPT(args.cpt_code_file)
+    raw_cpt_table = RawCPT(args.cpt_code_file, required_init_strings=args.init_cpt_filters)
+    gpt_inventory = raw_cpt_table.give_inventory()
+    dataset_dict = get_SubCon_train_dev_test_dict(gpt_inventory,
+                                                  args.part_train,
+                                                  args.part_test,
+                                                  shuffle=args.shuffle_data,
+                                                  seed=args.seed)
 
-    # Derive datasets from cpt_table...
-
-    trainer = SentenceTransformerTrainerHolder.create(args,
-                                                      args.model_name,
-                                                      )
-
-
-
-
+    trainer = SentenceTransformerSupConTrainer(args,
+                                               args.model_name,
+                                               dataset_dict['train'],
+                                               dataset_dict['valid']
+                                               )
+    trainer.train()
 
 
 if __name__ == '__main__':
