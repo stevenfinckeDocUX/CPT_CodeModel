@@ -1,6 +1,8 @@
 import argparse
 from dataclasses import dataclass
 from collections import UserList
+from datasets import DatasetDict
+from transformers import Trainer
 from ml_util.random_utils import set_seed
 from ml_util.classes import ClassMember, ClassInventory
 from ml_util.docux_logger import give_logger, configure_logger
@@ -88,6 +90,27 @@ class RawCPT:
 
         return ClassInventory(ready, name='CPT Inventory')
 
+supported_loss = ('SupCon')
+def get_train_dev_test_dict(gpt_inventory: ClassInventory, args: argparse.PARSER) -> DatasetDict:
+    loc_args = (gpt_inventory, args.part_train, args.part_test)
+    loc_kwargs = {'shuffle': args.shuffle_data, 'seed': args.seed}
+
+    if args.loss == 'SupCon':
+        return get_SubCon_train_dev_test_dict(*loc_args, **loc_kwargs)
+    else:
+        raise NotImplementedError
+
+def give_trainer(args: argparse.PARSER, dataset_dict: DatasetDict) -> Trainer:
+    loc_args = (args,
+                args.model_name,
+                dataset_dict['train'],
+                dataset_dict['valid']
+                )
+    if args.loss == 'SupCon':
+        return SentenceTransformerSupConTrainer(*loc_args)
+    else:
+        raise NotImplementedError
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -113,6 +136,7 @@ def main():
     parser.add_argument('--logging_steps', type=int, default=10)
     parser.add_argument('--log_file', type=str, default="sup_con.log")
     parser.add_argument('--logging_level', type=str, default='DEBUG')
+    parser.add_argument('--loss', type=str, default='SupCon', choices=supported_loss)
     args = parser.parse_args()
     # configure_logger(logger, args.log_file, level=args.logging_level)
 
@@ -130,17 +154,9 @@ def main():
                            required_init_strings=args.init_cpt_filters)
     print(f"raw cpt cnt: {len(raw_cpt_table.by_cpt)}")
     gpt_inventory = raw_cpt_table.give_inventory(len(required_fields))
-    dataset_dict = get_SubCon_train_dev_test_dict(gpt_inventory,
-                                                  args.part_train,
-                                                  args.part_test,
-                                                  shuffle=args.shuffle_data,
-                                                  seed=args.seed)
 
-    trainer = SentenceTransformerSupConTrainer(args,
-                                               args.model_name,
-                                               dataset_dict['train'],
-                                               dataset_dict['valid']
-                                               )
+    dataset_dict = get_train_dev_test_dict(gpt_inventory, args)
+    trainer = give_trainer(args, dataset_dict)
 
     trainer.train()
 
