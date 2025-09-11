@@ -21,7 +21,9 @@ class RawCPT:
     def __init__(self,
                  code_file: str,
                  *,
-                 required_init_strings: List[str] = None):
+                 required_init_strings: List[str] = None,
+                 required_fields: List[str] = None
+                 ):
         self.by_cpt: Dict[str, Tuple[str]] = {}
         self.header_inds = []
         self.field_names: List[str] = []
@@ -31,6 +33,7 @@ class RawCPT:
                          or sum([int(cpt.startswith(init_s)) for init_s in required_init_strings]) > 0)
 
         cpt_ind = None
+        required_inds = None
         with open(code_file, "r", encoding='utf-8') as in_H:
             for line in in_H:
                 line = line.strip()
@@ -42,10 +45,16 @@ class RawCPT:
                                 self.header_inds.append(ind)
                                 self.field_names.append(field)
                         cpt_ind = self.field_names.index('CPT Code')
+                        if required_fields:
+                            required_inds = [self.field_names.index(n) for n in required_fields]
                 else:
-                    raw: List[str] = line.strip().split("\t")
+                    line = line.strip()
+                    raw: List[str] = line.split("\t")
                     use_values = tuple([raw[i] if i < len(raw) else ''
                                         for i in self.header_inds])
+                    if required_fields and min([len(use_values[ind]) for ind in required_inds]) < 1:
+                        logger.info(f"skip input line because it lacks required values: {line.strip()}")
+                        continue
                     cpt = use_values[cpt_ind]
                     if cpt_is_usable(cpt):
                         self.by_cpt[cpt] = use_values
@@ -56,25 +65,26 @@ class RawCPT:
             ][
                 self.field_names.index(field)
             ])
+        pass
 
     def give_variants_for_cpt(self,
                               cpt_code: str) -> Tuple:
         return tuple([self.value_for_cpt_field(cpt_code, f)
                       for f in  self.display_fields])
 
-    def give_inventory(self) -> ClassInventory:
-        ready = \
-            [ClassMember(
-                cpt,
-                tuple(sorted(list(set(
-                    [
-                        fields[
-                            self.field_names.index(n)
-                        ]
-                        for n in self.display_fields]
-                ))))
-            )
-                for cpt, fields in sorted(self.by_cpt.items())]
+    def give_inventory(self,
+                       min_form_count_per_class: int) -> ClassInventory:
+        ready: List[ClassMember] = []
+        for cpt, fields in sorted(self.by_cpt.items()):
+            ready_fields = tuple(sorted(list(set(
+                [
+                    fields[
+                        self.field_names.index(n)
+                    ]
+                    for n in self.display_fields]
+            ))))
+            if len(ready_fields) >= min_form_count_per_class:
+                ready.append(ClassMember(cpt, ready_fields))
 
         return ClassInventory(ready, name='CPT Inventory')
 
@@ -87,8 +97,8 @@ def main():
                         default="pritamdeka/PubMedBERT-mnli-snli-scinli-scitail-mednli-stsb")
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--overwrite_output_dir', action='store_true')
-    parser.add_argument('--per_device_train_batch_size', type=int, default=64)
-    parser.add_argument('--per_device_eval_batch_size', type=int, default=64)
+    parser.add_argument('--per_device_train_batch_size', type=int, default=128)
+    parser.add_argument('--per_device_eval_batch_size', type=int, default=128)
     parser.add_argument('--learning_rate', type=float, default=5e-05)
     parser.add_argument('--num_train_epochs', type=float, default=3.0)
     parser.add_argument('--warmup_ratio', type=float, default=0.0)
@@ -99,16 +109,27 @@ def main():
     parser.add_argument('--init_cpt_filters', type=str, nargs='+',
                         help="Only use CPT codes which begin with one of these strings.")
     parser.add_argument('--loss_temperature', type=float, default=0.01)
+    parser.add_argument('--evaluation_strategy', type=str, default='epoch')
+    parser.add_argument('--logging_steps', type=int, default=10)
+    parser.add_argument('--log_file', type=str, default="sup_con.log")
+    parser.add_argument('--logging_level', type=str, default='DEBUG')
     args = parser.parse_args()
+    # configure_logger(logger, args.log_file, level=args.logging_level)
+
     set_seed(args.seed)
 
     # For the trainer
     args.do_train = True
     args.do_eval = True
     args.do_predict = False
+    args.use_mps_device = True
 
-    raw_cpt_table = RawCPT(args.cpt_code_file, required_init_strings=args.init_cpt_filters)
-    gpt_inventory = raw_cpt_table.give_inventory()
+    required_fields = ['Long', 'Consumer']
+    raw_cpt_table = RawCPT(args.cpt_code_file,
+                           required_fields=required_fields,
+                           required_init_strings=args.init_cpt_filters)
+    print(f"raw cpt cnt: {len(raw_cpt_table.by_cpt)}")
+    gpt_inventory = raw_cpt_table.give_inventory(len(required_fields))
     dataset_dict = get_SubCon_train_dev_test_dict(gpt_inventory,
                                                   args.part_train,
                                                   args.part_test,
@@ -120,6 +141,7 @@ def main():
                                                dataset_dict['train'],
                                                dataset_dict['valid']
                                                )
+
     trainer.train()
 
 
