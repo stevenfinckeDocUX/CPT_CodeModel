@@ -137,6 +137,7 @@ def main():
     parser.add_argument('--log_file', type=str, default="sup_con.log")
     parser.add_argument('--logging_level', type=str, default='DEBUG')
     parser.add_argument('--loss', type=str, default='SupCon', choices=supported_loss)
+    parser.add_argument('--required_fields', type=str, nargs='+', default=['Long', 'Consumer'])
     args = parser.parse_args()
     # configure_logger(logger, args.log_file, level=args.logging_level)
 
@@ -146,14 +147,12 @@ def main():
     args.do_train = True
     args.do_eval = True
     args.do_predict = False
-    args.use_mps_device = True
 
-    required_fields = ['Long', 'Consumer']
     raw_cpt_table = RawCPT(args.cpt_code_file,
-                           required_fields=required_fields,
+                           required_fields=args.required_fields,
                            required_init_strings=args.init_cpt_filters)
     print(f"raw cpt cnt: {len(raw_cpt_table.by_cpt)}")
-    gpt_inventory = raw_cpt_table.give_inventory(len(required_fields))
+    gpt_inventory = raw_cpt_table.give_inventory(min_form_count_per_class=len(args.required_fields))
 
     dataset_dict = get_train_dev_test_dict(gpt_inventory, args)
     trainer = give_trainer(args, dataset_dict)
