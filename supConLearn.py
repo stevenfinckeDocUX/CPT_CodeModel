@@ -6,8 +6,8 @@ from transformers import Trainer
 from ml_util.random_utils import set_seed
 from ml_util.classes import ClassMember, ClassInventory
 from ml_util.docux_logger import give_logger, configure_logger
-from ml_util.sentence_transformer_interface import SentenceTransformerSupConTrainer
 from ml_util.supervised_contrastive import get_SubCon_train_dev_test_dict
+from ml_util.sentence_transformer_interface import SentenceTransformerCustomTrainer
 from typing import Tuple, Dict, List, Iterable
 
 logger = give_logger('supConLearn')
@@ -90,13 +90,15 @@ class RawCPT:
 
         return ClassInventory(ready, name='CPT Inventory')
 
-supported_loss = ('SupCon')
+supported_loss = ('SupCon', 'Triplet')
 def get_train_dev_test_dict(gpt_inventory: ClassInventory, args: argparse.PARSER) -> DatasetDict:
     loc_args = (gpt_inventory, args.part_train, args.part_test)
     loc_kwargs = {'shuffle': args.shuffle_data, 'seed': args.seed}
 
     if args.loss == 'SupCon':
         return get_SubCon_train_dev_test_dict(*loc_args, **loc_kwargs)
+    elif args.loss == 'Triplet':
+        return get_Triplet_train_dev_test_dict(gpt_inventory, args)
     else:
         raise NotImplementedError
 
@@ -106,11 +108,7 @@ def give_trainer(args: argparse.PARSER, dataset_dict: DatasetDict) -> Trainer:
                 dataset_dict['train'],
                 dataset_dict['valid']
                 )
-    if args.loss == 'SupCon':
-        return SentenceTransformerSupConTrainer(*loc_args)
-    else:
-        raise NotImplementedError
-
+    return SentenceTransformerCustomTrainer(*loc_args)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -138,6 +136,7 @@ def main():
     parser.add_argument('--logging_level', type=str, default='DEBUG')
     parser.add_argument('--loss', type=str, default='SupCon', choices=supported_loss)
     parser.add_argument('--required_fields', type=str, nargs='+', default=['Long', 'Consumer'])
+    parser.add_argument('--triplet_loss_margin', type=float, default=0.5)
     args = parser.parse_args()
     # configure_logger(logger, args.log_file, level=args.logging_level)
 
