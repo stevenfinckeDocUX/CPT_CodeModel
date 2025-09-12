@@ -6,7 +6,7 @@ from transformers import Trainer
 from ml_util.random_utils import set_seed
 from ml_util.classes import ClassMember, ClassInventory
 from ml_util.docux_logger import give_logger, configure_logger
-from ml_util.supervised_contrastive import get_SubCon_train_dev_test_dict
+from ml_util.supervised_contrastive import get_BatchAll_train_dev_test_dict
 from ml_util.triplet import get_Triplet_train_dev_test_dict
 from ml_util.sentence_transformer_interface import SentenceTransformerCustomTrainer
 from typing import Tuple, Dict, List, Iterable
@@ -91,15 +91,18 @@ class RawCPT:
 
         return ClassInventory(ready, name='CPT Inventory')
 
-supported_loss = ('SupCon', 'Triplet')
+supported_loss = ('SupCon', 'Triplet', 'BATriplet', 'BShATriplet')
 def get_train_dev_test_dict(gpt_inventory: ClassInventory, args: argparse.PARSER) -> DatasetDict:
     loc_args = (gpt_inventory, args.part_train, args.part_test)
     loc_kwargs = {'shuffle': args.shuffle_data, 'seed': args.seed}
 
-    if args.loss == 'SupCon':
-        return get_SubCon_train_dev_test_dict(*loc_args, **loc_kwargs)
+    if args.loss in ('SupCon'):
+        return get_BatchAll_train_dev_test_dict(*loc_args, **loc_kwargs)
     elif args.loss == 'Triplet':
         return get_Triplet_train_dev_test_dict(*loc_args, **loc_kwargs)
+    elif args.loss in ('BATriplet', 'BShATriplet'):
+        return get_BatchAll_train_dev_test_dict(*loc_args, **loc_kwargs,
+                                                label_field_name='label', input_field_name='sentence')
     else:
         raise NotImplementedError
 
