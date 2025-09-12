@@ -7,6 +7,7 @@ from ml_util.random_utils import set_seed
 from ml_util.classes import ClassMember, ClassInventory
 from ml_util.docux_logger import give_logger, configure_logger
 from ml_util.supervised_contrastive import get_SubCon_train_dev_test_dict
+from ml_util.triplet import get_Triplet_train_dev_test_dict
 from ml_util.sentence_transformer_interface import SentenceTransformerCustomTrainer
 from typing import Tuple, Dict, List, Iterable
 
@@ -98,7 +99,7 @@ def get_train_dev_test_dict(gpt_inventory: ClassInventory, args: argparse.PARSER
     if args.loss == 'SupCon':
         return get_SubCon_train_dev_test_dict(*loc_args, **loc_kwargs)
     elif args.loss == 'Triplet':
-        return get_Triplet_train_dev_test_dict(gpt_inventory, args)
+        return get_Triplet_train_dev_test_dict(*loc_args, **loc_kwargs)
     else:
         raise NotImplementedError
 
@@ -106,9 +107,10 @@ def give_trainer(args: argparse.PARSER, dataset_dict: DatasetDict) -> Trainer:
     loc_args = (args,
                 args.model_name,
                 dataset_dict['train'],
-                dataset_dict['valid']
+                dataset_dict['valid'],
                 )
-    return SentenceTransformerCustomTrainer(*loc_args)
+    loc_kwargs = {'loss_name': args.loss}
+    return SentenceTransformerCustomTrainer(*loc_args, **loc_kwargs)
 
 def main():
     parser = argparse.ArgumentParser()
