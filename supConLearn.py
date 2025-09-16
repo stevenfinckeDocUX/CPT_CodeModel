@@ -1,15 +1,13 @@
 import argparse
-from dataclasses import dataclass
-from collections import UserList
 from datasets import DatasetDict
 from transformers import Trainer
 from ml_util.random_utils import set_seed
 from ml_util.classes import ClassMember, ClassInventory
-from ml_util.docux_logger import give_logger, configure_logger
-from ml_util.supervised_contrastive import get_BatchAll_train_dev_test_dict
-from ml_util.triplet import get_Triplet_train_dev_test_dict
+from ml_util.docux_logger import give_logger
+from ml_util.supervised_contrastive import get_BatchAll_train_dev_test_dict, SentenceTransformerSupConTrainer
+from ml_util.triplet import get_Triplet_train_dev_test_dict, SentenceTransformerTripletTrainer, SentenceTransformerAllBatchTripletTrainer
 from ml_util.sentence_transformer_interface import SentenceTransformerCustomTrainer
-from typing import Tuple, Dict, List, Iterable
+from typing import Tuple, Dict, List, Type
 
 logger = give_logger('supConLearn')
 
@@ -20,7 +18,7 @@ class RawCPT:
     Concept Id	CPT Code	Long	Medium	Short	Consumer	Spanish Consumer	Current Descriptor Effective Date	
     Test Name	Lab Name	Manufacturer Name
     '''
-    display_fields = ('Long', 'Consumer')
+    display_fields: List[str] = ['Long', 'Consumer']
     def __init__(self,
                  code_file: str,
                  *,
@@ -77,43 +75,64 @@ class RawCPT:
 
     def give_inventory(self,
                        min_form_count_per_class: int) -> ClassInventory:
-        ready: List[ClassMember] = []
+        class_inventory = ClassInventory(name='CPT Inventory')
+
         for cpt, fields in sorted(self.by_cpt.items()):
-            ready_fields = tuple(sorted(list(set(
+            ready_fields = sorted(list(set(
                 [
                     fields[
                         self.field_names.index(n)
                     ]
                     for n in self.display_fields]
-            ))))
+            )))
             if len(ready_fields) >= min_form_count_per_class:
-                ready.append(ClassMember(cpt, ready_fields))
+                class_inventory.add_member(cpt, tuple(ready_fields))
 
-        return ClassInventory(ready, name='CPT Inventory')
+        return class_inventory
 
-supported_loss = ('SupCon', 'Triplet', 'BATriplet', 'BShATriplet')
-def get_train_dev_test_dict(gpt_inventory: ClassInventory, args: argparse.PARSER) -> DatasetDict:
-    loc_args = (gpt_inventory, args.part_train, args.part_test)
+
+supported_loss = ('SupCon', 'Triplet', 'BATriplet', 'BShATriplet', 'VBATriplet')
+
+
+def get_train_dev_test_dict(cpt_inventory: ClassInventory,
+                            args: argparse.PARSER) -> DatasetDict:
+    loc_args = (cpt_inventory, args.part_train, args.part_test)
     loc_kwargs = {'shuffle': args.shuffle_data, 'seed': args.seed}
 
     if args.loss in ('SupCon'):
         return get_BatchAll_train_dev_test_dict(*loc_args, **loc_kwargs)
     elif args.loss == 'Triplet':
         return get_Triplet_train_dev_test_dict(*loc_args, **loc_kwargs)
-    elif args.loss in ('BATriplet', 'BShATriplet'):
+    elif args.loss in ('BATriplet', 'BShATriplet', 'VBATriplet'):
         return get_BatchAll_train_dev_test_dict(*loc_args, **loc_kwargs,
-                                                label_field_name='label', input_field_name='sentence')
+                                                # label_field_name='label', input_field_name='sentence'
+                                                )
     else:
         raise NotImplementedError
 
-def give_trainer(args: argparse.PARSER, dataset_dict: DatasetDict) -> Trainer:
-    loc_args = (args,
-                args.model_name,
-                dataset_dict['train'],
-                dataset_dict['valid'],
-                )
-    loc_kwargs = {'loss_name': args.loss}
-    return SentenceTransformerCustomTrainer(*loc_args, **loc_kwargs)
+
+trainer_class_map: Dict[str, Type] = \
+    {'SupCon': SentenceTransformerSupConTrainer,
+     'Triplet': SentenceTransformerTripletTrainer,
+     'BATriplet': SentenceTransformerAllBatchTripletTrainer,
+     'BShATriplet': SentenceTransformerAllBatchTripletTrainer,
+     'VBATriplet': SentenceTransformerAllBatchTripletTrainer,
+     }
+
+
+def get_trainer(args: argparse.PARSER,
+                dataset_dict: DatasetDict, *,
+                class_inventory: ClassInventory) -> SentenceTransformerCustomTrainer:
+    loc_kwargs = {'top_args': args,
+                  'model_name': args.model_name,
+                  'train_dataset': dataset_dict['train'],
+                  'eval_dataset': dataset_dict['valid'],
+                  'loss_name': args.loss,
+                  'class_inventory': class_inventory,
+                  }
+    trainer_class = trainer_class_map[args.loss]
+
+    return trainer_class(**loc_kwargs)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -142,6 +161,7 @@ def main():
     parser.add_argument('--loss', type=str, default='SupCon', choices=supported_loss)
     parser.add_argument('--required_fields', type=str, nargs='+', default=['Long', 'Consumer'])
     parser.add_argument('--triplet_loss_margin', type=float, default=0.5)
+    parser.add_argument('--max_grad_norm', type=float, default=0.5)
     args = parser.parse_args()
     # configure_logger(logger, args.log_file, level=args.logging_level)
 
@@ -151,15 +171,18 @@ def main():
     args.do_train = True
     args.do_eval = True
     args.do_predict = False
+    args.eval_strategy = 'epoch'
 
     raw_cpt_table = RawCPT(args.cpt_code_file,
                            required_fields=args.required_fields,
                            required_init_strings=args.init_cpt_filters)
     print(f"raw cpt cnt: {len(raw_cpt_table.by_cpt)}")
-    gpt_inventory = raw_cpt_table.give_inventory(min_form_count_per_class=len(args.required_fields))
+    cpt_inventory = raw_cpt_table.give_inventory(min_form_count_per_class=len(args.required_fields))
 
-    dataset_dict = get_train_dev_test_dict(gpt_inventory, args)
-    trainer = give_trainer(args, dataset_dict)
+    dataset_dict = get_train_dev_test_dict(cpt_inventory, args)
+    trainer = get_trainer(args, dataset_dict, class_inventory=cpt_inventory)
+    init_metrics = trainer.evaluate()
+    print(f"init_metrics: {init_metrics}")
 
     trainer.train()
 
