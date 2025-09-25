@@ -169,6 +169,7 @@ def main():
     parser.add_argument('--required_fields', type=str, nargs='+', default=['Long', 'Consumer'])
     parser.add_argument('--triplet_loss_margin', type=float, default=0.5)
     parser.add_argument('--max_grad_norm', type=float, default=0.5)
+    parser.add_argument('--weight_decay', type=float, default=0.0)
     parser.add_argument('--output_hidden_states', action='store_true')
     parser.add_argument('--hard_batching', action='store_true',
                         help="Keep model output embeddings for subsequent hard batching.")
