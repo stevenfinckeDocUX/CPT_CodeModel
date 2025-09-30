@@ -1,15 +1,17 @@
 import argparse
 from datasets import DatasetDict
-from transformers import Trainer
+
+from typing import Tuple, Dict, List, Type
+
 from ml_util.random_utils import set_seed
-from ml_util.classes import ClassMember, ClassInventory
+from ml_util.classes import ClassInventory
 from ml_util.docux_logger import give_logger
 from ml_util.supervised_contrastive import SentenceTransformerSupConTrainer
-from ml_util.supervised_contrastive import SentenceTransformerSupConTrainer
 from ml_util.batch_all import get_BatchAll_train_dev_test_dict, BatchCache
-from ml_util.triplet import get_Triplet_train_dev_test_dict, SentenceTransformerTripletTrainer, SentenceTransformerAllBatchTripletTrainer
+from ml_util.triplet import get_Triplet_train_dev_test_dict, SentenceTransformerTripletTrainer, \
+    SentenceTransformerAllBatchTripletTrainer
 from ml_util.sentence_transformer_interface import SentenceTransformerCustomTrainer
-from typing import Tuple, Dict, List, Type
+
 
 logger = give_logger('supConLearn')
 
@@ -98,9 +100,18 @@ supported_loss = ('SupCon', 'Triplet', 'BATriplet', 'BShATriplet', 'VBATriplet')
 
 def get_train_dev_test_dict(cpt_inventory: ClassInventory,
                             args: argparse.PARSER,
-                            batch_cache: BatchCache) -> DatasetDict:
-    loc_args = (cpt_inventory, args.part_train, args.part_test)
-    loc_kwargs = {'shuffle': args.shuffle_data, 'seed': args.seed}
+                            batch_cache: BatchCache,
+                            ) -> DatasetDict:
+    loc_args = ()
+    loc_kwargs = {'class_inventory': cpt_inventory,
+                  'part_train': args.part_train,
+                  'part_test': args.part_test,
+                  'shuffle': args.shuffle_data,
+                  'seed': args.seed,
+                  'hard_batching': args.hard_batching,
+                  'train_batch_size': args.per_device_train_batch_size,
+                  'test_batch_size': args.per_device_eval_batch_size,
+                  }
 
     if args.loss in ('SupCon'):
         return get_BatchAll_train_dev_test_dict(*loc_args, **loc_kwargs)
@@ -108,9 +119,8 @@ def get_train_dev_test_dict(cpt_inventory: ClassInventory,
         return get_Triplet_train_dev_test_dict(*loc_args, **loc_kwargs)
     elif args.loss in ('BATriplet', 'BShATriplet', 'VBATriplet'):
         return get_BatchAll_train_dev_test_dict(*loc_args,
-                                                batch_cache=batch_cache,
+                                                train_batch_cache=batch_cache,
                                                 **loc_kwargs,
-                                                # label_field_name='label', input_field_name='sentence'
                                                 )
     else:
         raise NotImplementedError
@@ -127,15 +137,17 @@ trainer_class_map: Dict[str, Type] = \
 
 def get_trainer(args: argparse.PARSER,
                 class_inventory: ClassInventory = None) -> SentenceTransformerCustomTrainer:
-    batch_cache = BatchCache(args.per_device_train_batch_size) if args.hard_batching else None
-    dataset_dict = get_train_dev_test_dict(class_inventory, args, batch_cache)
+    train_batch_cache = BatchCache(args.per_device_train_batch_size) if args.hard_batching else None
+    eval_batch_cache = BatchCache(args.per_device_eval_batch_size)
+    dataset_dict = get_train_dev_test_dict(class_inventory, args, train_batch_cache)
     loc_kwargs = {'top_args': args,
                   'model_name': args.model_name,
                   'train_dataset': dataset_dict['train'],
                   'eval_dataset': dataset_dict['valid'],
                   'loss_name': args.loss,
                   'class_inventory': class_inventory,
-                  'batch_cache': batch_cache,
+                  'train_batch_cache': train_batch_cache,
+                  'eval_batch_cache': eval_batch_cache,
                   }
     trainer_class = trainer_class_map[args.loss]
 
@@ -173,6 +185,10 @@ def main():
     parser.add_argument('--output_hidden_states', action='store_true')
     parser.add_argument('--hard_batching', action='store_true',
                         help="Keep model output embeddings for subsequent hard batching.")
+    parser.add_argument('--optim', type=str, default='adamw_torch')
+    parser.add_argument('--fp16', action='store_true', help="Must be on GPU!")
+    parser.add_argument("--torch_empty_cache_steps", type=int, default=1 ,
+                        help="Needed, at least, when running of a MacBook with 24GB physical RAM (MPS).")
     args = parser.parse_args()
     # configure_logger(logger, args.log_file, level=args.logging_level)
 
@@ -190,7 +206,6 @@ def main():
     print(f"raw cpt cnt: {len(raw_cpt_table.by_cpt)}")
     cpt_inventory = raw_cpt_table.give_inventory(min_form_count_per_class=len(args.required_fields))
 
-    # dataset_dict = get_train_dev_test_dict(cpt_inventory, args)
     trainer = get_trainer(args, cpt_inventory)
     init_metrics = trainer.evaluate()
     print(f"init_metrics: {init_metrics}")
